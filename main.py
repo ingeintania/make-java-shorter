@@ -13,95 +13,52 @@ def apply_L1(code: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# L2: LOOP SIMPLIFICATION
+# L2: LOOP SIMPLIFICATION (run BEFORE L4)
 # ─────────────────────────────────────────────
 def apply_L2(code: str) -> str:
-    """
-    Convert indexed for-loops to enhanced for-loops.
-    Must run BEFORE L3 (renaming) so variable names are still readable.
-
-    List pattern:
-      for (int i = 0; i < col.size(); i++) {
-          Type var = col.get(i);
-          ... var ...
-      }
-      → for (Object item : col) { ... item ... }
-
-    Array pattern:
-      for (int i = 0; i < arr.length; i++) {
-          Type var = arr[i];
-          ... var ...
-      }
-      → for (Object item : arr) { ... item ... }
-    """
-
-    # ── List loop ────────────────────────────────────────────────────────
-    list_pattern = re.compile(
+    list_pat = re.compile(
         r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\.size\(\)\s*;\s*\1\+\+\s*\)\s*\{([^}]*)\}',
-        re.DOTALL
-    )
+        re.DOTALL)
+    arr_pat = re.compile(
+        r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\.length\s*;\s*\1\+\+\s*\)\s*\{([^}]*)\}',
+        re.DOTALL)
 
     def replace_list(m):
-        idx_var = m.group(1)   # e.g. "index"
-        col     = m.group(2)   # e.g. "numbers"
-        body    = m.group(3)
-
-        # Remove temp variable declaration: Type varName = col.get(idx);
-        temp_decl = re.compile(
-            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(col)}\.get\({re.escape(idx_var)}\)\s*;'
-        )
-        temp_match = temp_decl.search(body)
-        if temp_match:
-            temp_var = temp_match.group(1)
-            body = temp_decl.sub('', body)
-            # Replace remaining usages of temp_var with 'item'
-            body = re.sub(rf'\b{re.escape(temp_var)}\b', 'item', body)
+        idx, col, body = m.group(1), m.group(2), m.group(3)
+        tdecl = re.compile(
+            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(col)}\.get\({re.escape(idx)}\)\s*;')
+        t = tdecl.search(body)
+        if t:
+            body = tdecl.sub('', body)
+            body = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', body)
         else:
-            # No temp var — replace col.get(idx) directly
             body = re.sub(
-                rf'\b{re.escape(col)}\.get\({re.escape(idx_var)}\)',
-                'item', body
-            )
-
+                rf'\b{re.escape(col)}\.get\({re.escape(idx)}\)', 'item', body)
         return f'for (Object item : {col}) {{{body}}}'
 
-    # ── Array loop ───────────────────────────────────────────────────────
-    array_pattern = re.compile(
-        r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\.length\s*;\s*\1\+\+\s*\)\s*\{([^}]*)\}',
-        re.DOTALL
-    )
-
     def replace_array(m):
-        idx_var = m.group(1)   # e.g. "position"
-        arr     = m.group(2)   # e.g. "dataArray"
-        body    = m.group(3)
-
-        # Remove temp variable declaration: Type varName = arr[idx];
-        temp_decl = re.compile(
-            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(arr)}\[{re.escape(idx_var)}\]\s*;'
-        )
-        temp_match = temp_decl.search(body)
-        if temp_match:
-            temp_var = temp_match.group(1)
-            body = temp_decl.sub('', body)
-            body = re.sub(rf'\b{re.escape(temp_var)}\b', 'item', body)
+        idx, arr, body = m.group(1), m.group(2), m.group(3)
+        tdecl = re.compile(
+            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(arr)}\[{re.escape(idx)}\]\s*;')
+        t = tdecl.search(body)
+        if t:
+            body = tdecl.sub('', body)
+            body = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', body)
         else:
             body = re.sub(
-                rf'\b{re.escape(arr)}\[{re.escape(idx_var)}\]',
-                'item', body
-            )
-
+                rf'\b{re.escape(arr)}\[{re.escape(idx)}\]', 'item', body)
         return f'for (Object item : {arr}) {{{body}}}'
 
-    code = list_pattern.sub(replace_list, code)
-    code = array_pattern.sub(replace_array, code)
+    code = list_pat.sub(replace_list, code)
+    code = arr_pat.sub(replace_array, code)
     return code
 
 
 # ─────────────────────────────────────────────
-# L3: VARIABLE RENAMING
+# L4: VARIABLE RENAMING (tokenizer-based)
 # ─────────────────────────────────────────────
 JAVA_KEYWORDS = {
+    # Language keywords
     "abstract","assert","boolean","break","byte","case","catch","char",
     "class","const","continue","default","do","double","else","enum",
     "extends","final","finally","float","for","goto","if","implements",
@@ -109,90 +66,148 @@ JAVA_KEYWORDS = {
     "package","private","protected","public","return","short","static",
     "super","switch","synchronized","this","throw","throws","transient",
     "try","void","volatile","while","true","false","null",
-    # Common Java standard names — do not rename
-    "String","System","out","println","print","main","args","Object",
-    "List","ArrayList","Map","HashMap","Override","Exception",
-    "size","get","length","put","add","remove","contains","isEmpty",
-    # Loop keyword introduced by L2
+    # Standard library — never rename
+    "String","System","Object","Integer","Double","Float","Long","Boolean",
+    "List","ArrayList","Map","HashMap","Set","HashSet","Arrays","Collections",
+    "Math","StringBuilder","Scanner","Iterator",
+    "out","err","in",
+    "println","print","printf","format",
+    "toString","toArray","size","get","set","add","remove","put",
+    "contains","isEmpty","length","charAt","substring","equals",
+    "indexOf","valueOf","parseInt","main","args",
+    # Introduced by L2
     "item",
-    # Class/method names in sample — add your own as needed
-    "Example","calculateSum","printElements","Integer",
 }
 
 def encode_name(n: int) -> str:
     letters = string.ascii_lowercase
-    result = ""
-    n += 1
+    result, n = "", n + 1
     while n > 0:
         n, rem = divmod(n - 1, 26)
         result = letters[rem] + result
     return result
 
+# ─────────────────────────────────────────────
+# L3: STRING LITERAL TRUNCATION
+# ─────────────────────────────────────────────
 def apply_L3(code: str) -> str:
     """
-    Rename local variables and parameters to short names (a, b, c, ...).
-    Preserves Java keywords, standard library names, and L2 'item' keyword.
+    Replace the content of all string literals with empty string "".
+    String content carries no structural information relevant to
+    code completion — only the presence of a string matters.
+ 
+    Examples:
+      "List Before Rotation : "  →  ""
+      "Hello, World!"            →  ""
+      "Error: invalid input"     →  ""
+ 
+    Skips:
+      - Empty strings ""         (already empty, no change)
+      - Strings with only escape (e.g. "\n", "\t") — kept as-is
+        since they may carry type/format intent
     """
-    # Extract candidate identifiers (not in keywords)
-    tokens = re.findall(r'\b[a-zA-Z_][a-zA-Z0-9_]*\b', code)
-    candidates = sorted(set(t for t in tokens if t not in JAVA_KEYWORDS))
+    def truncate(m):
+        content = m.group(1)  # content inside quotes
+        # Keep truly empty strings and pure escape sequences unchanged
+        if content == "" or re.fullmatch(r'(\\[nrtbf\'"\\])+', content):
+            return m.group(0)
+        return '""'
+ 
+    return re.sub(r'"((?:[^"\\]|\\.)*)"', truncate, code)
 
-    rename_map = {}
-    for i, name in enumerate(candidates):
-        rename_map[name] = encode_name(i)
+def apply_L4(code: str):
+    """
+    Tokenizer-based renaming. Splits code into typed tokens so we never
+    accidentally rename:
+      - identifiers inside string literals  "..."
+      - identifiers inside import statements
+      - identifiers after a dot  (obj.METHOD)
+      - numeric literals
+      - Java keywords / stdlib names
+      - uppercase-starting names (class/type names)
+    """
+    token_re = re.compile(
+        r'("(?:[^"\\]|\\.)*")'          # G1: string literal
+        r'|(import\b[^;]+;)'             # G2: full import statement
+        r'|(\d+(?:\.\d+)?[fFdDlL]?)'   # G3: numeric literal
+        r'|([a-zA-Z_]\w*)'              # G4: identifier
+        r'|(\.)'                         # G5: dot
+        r'|(\s+)'                        # G6: whitespace
+        r'|([^\w\s])'                   # G7: any other symbol
+    )
 
-    result = code
-    for original, short in rename_map.items():
-        result = re.sub(rf'\b{re.escape(original)}\b', short, result)
+    tokens = list(token_re.finditer(code))
 
-    return result, rename_map
+    # ── Pass 1: collect rename candidates ────────────────────────────
+    candidates = set()
+    after_dot = False
+    for tok in tokens:
+        g1, g2, g3, g4, g5, g6, g7 = tok.groups()
+        if g6:          # whitespace — skip, don't reset after_dot
+            continue
+        if g5:          # dot — next identifier is a method/field, protect it
+            after_dot = True
+            continue
+        if g4 and not after_dot:
+            if g4 not in JAVA_KEYWORDS and g4[0].islower() and len(g4) > 1:
+                candidates.add(g4)
+        after_dot = False   # reset after any non-whitespace, non-dot token
 
+    rename_map = {name: encode_name(i)
+                  for i, name in enumerate(sorted(candidates))}
+
+    # ── Pass 2: rebuild code with renames applied ─────────────────────
+    result = []
+    after_dot = False
+    for tok in tokens:
+        g1, g2, g3, g4, g5, g6, g7 = tok.groups()
+        if g6:                          # whitespace — preserve as-is
+            result.append(g6)
+            continue
+        if g5:                          # dot
+            result.append('.')
+            after_dot = True
+            continue
+        if g4 and not after_dot and g4 in rename_map:
+            result.append(rename_map[g4])   # ← rename
+        else:
+            result.append(tok.group(0))     # ← keep original
+        after_dot = False
+
+    return ''.join(result), rename_map
 
 # ─────────────────────────────────────────────
-# PIPELINE: L0 → L1 → L2 → L3
+# PIPELINE: L0 → L1 → L2 → L4 → L3
 # ─────────────────────────────────────────────
 def run_pipeline(code: str) -> dict:
     L0 = code
     L1 = apply_L1(L0)
-    L2 = apply_L2(L1)
-    L3, rename_map = apply_L3(L2)
-
-    return {
-        "L0": L0,
-        "L1": L1,
-        "L2": L2,
-        "L3": L3,
-        "rename_map": rename_map,
-    }
+    L2 = apply_L2(L1)       # loop simplification first (names still readable)
+    L3 = apply_L3(L2)
+    L4, rename_map = apply_L4(L3)   # then rename
+    return {"L0": L0, "L1": L1, "L2": L2, "L4": L4, "L3": L3, "rename_map": rename_map}
 
 
 # ─────────────────────────────────────────────
 # DISPLAY
 # ─────────────────────────────────────────────
-def token_count(code: str) -> int:
-    return len(code.split())
-
 def print_level(label, code):
     print(f"\n{'━'*65}")
     print(f"  {label}")
     print(f"{'━'*65}")
     print(code)
 
-def print_report(results: dict):
-    L0 = results["L0"]
-    L1 = results["L1"]
-    L2 = results["L2"]
-    L3 = results["L3"]
-
-    print_level("L0 — Original",            L0)
-    print_level("L1 — Formatting Removed",  L1)
-    print_level("L2 — Loop Simplified",     L2)
-    print_level("L3 — Variables Renamed",   L3)
+def print_report(r):
+    print_level("L0 — Original",           r["L0"])
+    print_level("L1 — Formatting Removed", r["L1"])
+    print_level("L2 — Loop Simplified",    r["L2"])
+    print_level("L3 — String Literals Truncated", r["L3"])
+    print_level("L4 — Variables Renamed",  r["L4"])
 
     print(f"\n{'━'*65}")
-    print("  RENAME MAP (L3)")
+    print("  RENAME MAP (L4)")
     print(f"{'━'*65}")
-    for orig, short in results["rename_map"].items():
+    for orig, short in r["rename_map"].items():
         print(f"  {orig:<25} →  {short}")
 
 
@@ -200,54 +215,32 @@ def print_report(results: dict):
 # SAMPLE
 # ─────────────────────────────────────────────
 SAMPLE_JAVA = """\
+// Java program to print the elements of
+// a 2 D array or matrix
 import java.io.*;
 
-public class GeeksforGeeks {
-    // Method to check leap year
-    public static void isLeapYear(int year)
+// Driver Class
+class GFG {
+    public static void print2D(int mat[][])
     {
-        // flag to take a non-leap year by default
-        boolean is_leap_year = false;
+        // Loop through all rows
+        for (int i = 0; i < mat.length; i++) {
 
-        // If year is divisible by 4
-        if (year % 4 == 0) {
-            is_leap_year = true;
+            // Loop through all elements of current row
+            for (int j = 0; j < mat[i].length; j++)
+                System.out.print(mat[i][j] + " ");
 
-            // To identify whether it is a
-            // century year or not
-            if (year % 100 == 0) {
-                // Checking if year is divisible by 400
-                // therefore century leap year
-                if (year % 400 == 0)
-                    is_leap_year = true;
-                else
-                    is_leap_year = false;
-            }
+            System.out.println();
         }
-
-        // We land here when corresponding if fails
-        // If year is not divisible by 4
-        else
-
-            // Flag dealing-  Non leap-year
-            is_leap_year = false;
-
-        if (!is_leap_year)
-            System.out.println(year + " : Non Leap-year");
-        else
-            System.out.println(year + " : Leap-year");
     }
-
-    // Driver Code
-    public static void main(String[] args)
+      
+      // main function
+    public static void main(String args[]) throws IOException
     {
-        // Calling our function by
-        // passing century year not divisible by 400
-        isLeapYear(2000);
-
-        // Calling our function by
-        // passing Non-century year
-        isLeapYear(2002);
+        int mat[][] = { { 1, 2, 3, 4 },
+                        { 5, 6, 7, 8 },
+                        { 9, 10, 11, 12 } };
+        print2D(mat);
     }
 }"""
 
