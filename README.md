@@ -8,9 +8,13 @@ This project explores the idea of **code structure cost in LLM understanding**.
 ## Idea
 
 We transform Java code through multiple levels of simplification:
+
 L0: Original Java Code
+
 L1: Formatting removed (whitespace, new lines, indentation)
+
 L2: Loop simplification (indexed loop → enhanced for-loop)
+
 L3: Rename variables
 
 
