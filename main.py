@@ -13,7 +13,7 @@ def apply_L1(code: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# L2: LOOP SIMPLIFICATION (run BEFORE L4)
+# L2: LOOP SIMPLIFICATION (run BEFORE L3)
 # ─────────────────────────────────────────────
 def apply_L2(code: str) -> str:
     list_pat = re.compile(
@@ -55,7 +55,7 @@ def apply_L2(code: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# L4: VARIABLE RENAMING (tokenizer-based)
+# L3: VARIABLE RENAMING (tokenizer-based)
 # ─────────────────────────────────────────────
 JAVA_KEYWORDS = {
     # Language keywords
@@ -87,35 +87,7 @@ def encode_name(n: int) -> str:
         result = letters[rem] + result
     return result
 
-# ─────────────────────────────────────────────
-# L3: STRING LITERAL TRUNCATION
-# ─────────────────────────────────────────────
-def apply_L3(code: str) -> str:
-    """
-    Replace the content of all string literals with empty string "".
-    String content carries no structural information relevant to
-    code completion — only the presence of a string matters.
- 
-    Examples:
-      "List Before Rotation : "  →  ""
-      "Hello, World!"            →  ""
-      "Error: invalid input"     →  ""
- 
-    Skips:
-      - Empty strings ""         (already empty, no change)
-      - Strings with only escape (e.g. "\n", "\t") — kept as-is
-        since they may carry type/format intent
-    """
-    def truncate(m):
-        content = m.group(1)  # content inside quotes
-        # Keep truly empty strings and pure escape sequences unchanged
-        if content == "" or re.fullmatch(r'(\\[nrtbf\'"\\])+', content):
-            return m.group(0)
-        return '""'
- 
-    return re.sub(r'"((?:[^"\\]|\\.)*)"', truncate, code)
-
-def apply_L4(code: str):
+def apply_L3(code: str):
     """
     Tokenizer-based renaming. Splits code into typed tokens so we never
     accidentally rename:
@@ -177,15 +149,14 @@ def apply_L4(code: str):
     return ''.join(result), rename_map
 
 # ─────────────────────────────────────────────
-# PIPELINE: L0 → L1 → L2 → L4 → L3
+# PIPELINE: L0 → L1 → L2 → L3
 # ─────────────────────────────────────────────
 def run_pipeline(code: str) -> dict:
     L0 = code
     L1 = apply_L1(L0)
     L2 = apply_L2(L1)       # loop simplification first (names still readable)
-    L3 = apply_L3(L2)
-    L4, rename_map = apply_L4(L3)   # then rename
-    return {"L0": L0, "L1": L1, "L2": L2, "L4": L4, "L3": L3, "rename_map": rename_map}
+    L3, rename_map = apply_L3(L2)   # then rename
+    return {"L0": L0, "L1": L1, "L2": L2, "L3": L3, "rename_map": rename_map}
 
 
 # ─────────────────────────────────────────────
@@ -202,48 +173,26 @@ def print_report(r):
     print_level("L1 — Formatting Removed", r["L1"])
     print_level("L2 — Loop Simplified",    r["L2"])
     print_level("L3 — String Literals Truncated", r["L3"])
-    print_level("L4 — Variables Renamed",  r["L4"])
+    print_level("L3 — Variables Renamed",  r["L3"])
 
     print(f"\n{'━'*65}")
-    print("  RENAME MAP (L4)")
+    print("  RENAME MAP (L3)")
     print(f"{'━'*65}")
     for orig, short in r["rename_map"].items():
         print(f"  {orig:<25} →  {short}")
 
 
 # ─────────────────────────────────────────────
-# SAMPLE
+# READ FROM FILE
 # ─────────────────────────────────────────────
-SAMPLE_JAVA = """\
-// Java program to print the elements of
-// a 2 D array or matrix
-import java.io.*;
 
-// Driver Class
-class GFG {
-    public static void print2D(int mat[][])
-    {
-        // Loop through all rows
-        for (int i = 0; i < mat.length; i++) {
+def read_java_file(path):
+    with open(path, "r", encoding="utf-8") as f:
+        return f.read()
 
-            // Loop through all elements of current row
-            for (int j = 0; j < mat[i].length; j++)
-                System.out.print(mat[i][j] + " ");
-
-            System.out.println();
-        }
-    }
-      
-      // main function
-    public static void main(String args[]) throws IOException
-    {
-        int mat[][] = { { 1, 2, 3, 4 },
-                        { 5, 6, 7, 8 },
-                        { 9, 10, 11, 12 } };
-        print2D(mat);
-    }
-}"""
 
 if __name__ == "__main__":
-    results = run_pipeline(SAMPLE_JAVA)
+    java_code = read_java_file("example.java")
+    
+    results = run_pipeline(java_code)
     print_report(results)
