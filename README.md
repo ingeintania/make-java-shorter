@@ -15,9 +15,7 @@ L1: Formatting removed (whitespace, new lines, indentation)
 
 L2: Loop simplification (indexed loop → enhanced for-loop)
 
-L3: String Literals Truncated
-
-L4: Rename variables
+L3: Rename variables
 
 
 Each level reduces code length and potentially token usage, while studying its impact on readability and structure.
@@ -28,7 +26,6 @@ Each level reduces code length and potentially token usage, while studying its i
 
 - Remove formatting (whitespace, indentation, new lines)
 - Simplify Java loops
-- Replace the content of all string literals with empty string
 - Rename variables to shorter identifiers
 - Generate progressively shorter Java code versions
 
