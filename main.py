@@ -1,5 +1,20 @@
 import re
 import string
+from tree_sitter import Language, Parser
+import tree_sitter_java as tsjava
+
+# ─────────────────────────────────────────────
+# SETUP TREE-SITTER
+# ─────────────────────────────────────────────
+JAVA_LANGUAGE = Language(tsjava.language())
+parser = Parser(JAVA_LANGUAGE)
+
+def parse(code: str):
+    return parser.parse(bytes(code, "utf8"))
+
+def node_text(node, code: str) -> str:
+    return code[node.start_byte:node.end_byte]
+
 
 # ─────────────────────────────────────────────
 # L1: FORMATTING REMOVAL
@@ -13,52 +28,155 @@ def apply_L1(code: str) -> str:
 
 
 # ─────────────────────────────────────────────
-# L2: LOOP SIMPLIFICATION (run BEFORE L3)
+# L2: LOOP SIMPLIFICATION (Tree-sitter based)
+#
+# A loop is ONLY converted if ALL of these hold:
+#   1. for (int i = 0; i < bound; i++)  — standard increment
+#   2. bound is col.size(), arr.length, or body has col.get(i)/arr[i]
+#   3. After removing the collection access, index `i` does NOT appear
+#      anywhere else in the body (meaning i is ONLY used for element access)
 # ─────────────────────────────────────────────
 def apply_L2(code: str) -> str:
-    list_pat = re.compile(
-        r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\.size\(\)\s*;\s*\1\+\+\s*\)\s*\{([^}]*)\}',
-        re.DOTALL)
-    arr_pat = re.compile(
-        r'for\s*\(\s*int\s+(\w+)\s*=\s*0\s*;\s*\1\s*<\s*(\w+)\.length\s*;\s*\1\+\+\s*\)\s*\{([^}]*)\}',
-        re.DOTALL)
+    tree = parse(code)
+    candidates = []
 
-    def replace_list(m):
-        idx, col, body = m.group(1), m.group(2), m.group(3)
+    def walk(node):
+        if node.type == "for_statement":
+            info = analyze_for(node, code)
+            if info:
+                candidates.append((node, info))
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+    candidates.sort(key=lambda x: x[0].start_byte, reverse=True)
+
+    result = code
+    for node, info in candidates:
+        converted = convert_loop(node, info, result)
+        if converted is not None:
+            result = result[:node.start_byte] + converted + result[node.end_byte:]
+        # if None → keep original, do not replace
+
+    return result
+
+
+def analyze_for(node, code: str):
+    full = node_text(node, code)
+    init_node = cond_node = body_node = None
+
+    for child in node.children:
+        if child.type == "local_variable_declaration":
+            init_node = child
+        elif child.type == "binary_expression":
+            cond_node = child
+        elif child.type == "block":
+            body_node = child
+
+    if not (init_node and cond_node and body_node):
+        return None
+
+    # Init: must be  int i = 0
+    init_text = node_text(init_node, code).strip()
+    init_m = re.match(r'int\s+(\w+)\s*=\s*0', init_text)
+    if not init_m:
+        return None
+    idx = init_m.group(1)
+
+    # Condition: must be  i < something
+    cond_text = node_text(cond_node, code).strip()
+    cond_m = re.match(rf'{re.escape(idx)}\s*<\s*(.+)', cond_text)
+    if not cond_m:
+        return None
+    bound = cond_m.group(1).strip()
+
+    # Update: must be  i++  (not i--)
+    if f'{idx}++' not in full and f'++{idx}' not in full:
+        return None
+
+    body = node_text(body_node, code)  # includes { }
+
+    # Case A: bound = col.size()
+    size_m = re.fullmatch(r'(\w+)\.size\(\)', bound)
+    if size_m:
+        return {"kind": "list", "idx": idx, "col": size_m.group(1), "body": body}
+
+    # Case B: bound = arr.length
+    len_m = re.fullmatch(r'(\w+)\.length', bound)
+    if len_m:
+        return {"kind": "array", "idx": idx, "col": len_m.group(1), "body": body}
+
+    # Case C: body has col.get(i) or col[i]
+    get_m = re.search(rf'(\w+)\.get\({re.escape(idx)}\)', body)
+    if get_m:
+        return {"kind": "list", "idx": idx, "col": get_m.group(1), "body": body}
+
+    arr_m = re.search(rf'(\w+)\[{re.escape(idx)}\]', body)
+    if arr_m:
+        return {"kind": "array", "idx": idx, "col": arr_m.group(1), "body": body}
+
+    return None
+
+
+def index_still_used(inner: str, idx: str) -> bool:
+    """
+    After stripping the collection access pattern, check if the index
+    variable `idx` still appears in the body.
+    If yes → loop is NOT safe to convert (idx used for other purposes).
+    Uses word-boundary match to avoid false positives.
+    """
+    return bool(re.search(rf'\b{re.escape(idx)}\b', inner))
+
+
+def convert_loop(node, info: dict, code: str):
+    """
+    Returns the converted loop string, or None if conversion is unsafe.
+    """
+    idx  = info["idx"]
+    col  = info["col"]
+    kind = info["kind"]
+    body = info["body"]
+
+    inner = body[body.index('{')+1 : body.rindex('}')]
+
+    if kind == "list":
+        # Remove temp var: Type var = col.get(idx);
         tdecl = re.compile(
-            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(col)}\.get\({re.escape(idx)}\)\s*;')
-        t = tdecl.search(body)
+            rf'\s*[\w<>\[\]]+\s+(\w+)\s*=\s*{re.escape(col)}\.get\({re.escape(idx)}\)\s*;')
+        t = tdecl.search(inner)
         if t:
-            body = tdecl.sub('', body)
-            body = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', body)
+            inner_converted = tdecl.sub('', inner)
+            inner_converted = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', inner_converted)
         else:
-            body = re.sub(
-                rf'\b{re.escape(col)}\.get\({re.escape(idx)}\)', 'item', body)
-        return f'for (Object item : {col}) {{{body}}}'
+            inner_converted = re.sub(
+                rf'{re.escape(col)}\.get\({re.escape(idx)}\)', 'item', inner)
 
-    def replace_array(m):
-        idx, arr, body = m.group(1), m.group(2), m.group(3)
+    elif kind == "array":
+        # Remove temp var: Type var = col[idx];
         tdecl = re.compile(
-            rf'\s*\w+\s+(\w+)\s*=\s*{re.escape(arr)}\[{re.escape(idx)}\]\s*;')
-        t = tdecl.search(body)
+            rf'\s*[\w<>\[\]]+\s+(\w+)\s*=\s*{re.escape(col)}\[{re.escape(idx)}\]\s*;')
+        t = tdecl.search(inner)
         if t:
-            body = tdecl.sub('', body)
-            body = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', body)
+            inner_converted = tdecl.sub('', inner)
+            inner_converted = re.sub(rf'\b{re.escape(t.group(1))}\b', 'item', inner_converted)
         else:
-            body = re.sub(
-                rf'\b{re.escape(arr)}\[{re.escape(idx)}\]', 'item', body)
-        return f'for (Object item : {arr}) {{{body}}}'
+            inner_converted = re.sub(
+                rf'{re.escape(col)}\[{re.escape(idx)}\]', 'item', inner)
+    else:
+        return None
 
-    code = list_pat.sub(replace_list, code)
-    code = arr_pat.sub(replace_array, code)
-    return code
+    # ── Safety check ──────────────────────────────────────────────────
+    # If index variable still appears after conversion → unsafe, bail out
+    if index_still_used(inner_converted, idx):
+        return None
+
+    return f'for (Object item : {col}) {{{inner_converted}}}'
 
 
 # ─────────────────────────────────────────────
-# L3: VARIABLE RENAMING (tokenizer-based)
+# L3: VARIABLE + METHOD RENAMING (Tree-sitter)
 # ─────────────────────────────────────────────
 JAVA_KEYWORDS = {
-    # Language keywords
     "abstract","assert","boolean","break","byte","case","catch","char",
     "class","const","continue","default","do","double","else","enum",
     "extends","final","finally","float","for","goto","if","implements",
@@ -66,17 +184,23 @@ JAVA_KEYWORDS = {
     "package","private","protected","public","return","short","static",
     "super","switch","synchronized","this","throw","throws","transient",
     "try","void","volatile","while","true","false","null",
-    # Standard library — never rename
     "String","System","Object","Integer","Double","Float","Long","Boolean",
     "List","ArrayList","Map","HashMap","Set","HashSet","Arrays","Collections",
-    "Math","StringBuilder","Scanner","Iterator",
-    "out","err","in",
-    "println","print","printf","format",
-    "toString","toArray","size","get","set","add","remove","put",
-    "contains","isEmpty","length","charAt","substring","equals",
-    "indexOf","valueOf","parseInt","main","args",
-    # Introduced by L2
-    "item",
+    "Math","StringBuilder","Scanner","Iterator","Optional","Random",
+    "Collection","Graph","DisjointSetUnion","KargerOutput",
+    "out","err","in","println","print","printf","format",
+    "toString","toArray","toList","size","get","set","add","remove","put",
+    "contains","isEmpty","length","charAt","substring","equals","equalsIgnoreCase",
+    "indexOf","lastIndexOf","valueOf","parseInt","parseDouble","trim","strip",
+    "split","join","replace","replaceAll","matches","startsWith","endsWith",
+    "compareTo","hashCode","clone","getClass","notify","wait","copy",
+    "next","hasNext","iterator","stream","forEach","map","filter","collect",
+    "sort","reverse","shuffle","min","max","abs","pow","sqrt","floor","ceil",
+    "append","insert","delete","capacity","nextInt",
+    "main","args","item",
+    "run","start","stop","init","execute","call",
+    "equals","hashCode","toString","compareTo",
+    "getValue","setValue","getName","setName","getId","setId",
 }
 
 def encode_name(n: int) -> str:
@@ -87,75 +211,113 @@ def encode_name(n: int) -> str:
         result = letters[rem] + result
     return result
 
-def apply_L3(code: str):
-    """
-    Tokenizer-based renaming. Splits code into typed tokens so we never
-    accidentally rename:
-      - identifiers inside string literals  "..."
-      - identifiers inside import statements
-      - identifiers after a dot  (obj.METHOD)
-      - numeric literals
-      - Java keywords / stdlib names
-      - uppercase-starting names (class/type names)
-    """
-    token_re = re.compile(
-        r'("(?:[^"\\]|\\.)*")'          # G1: string literal
-        r'|(import\b[^;]+;)'             # G2: full import statement
-        r'|(\d+(?:\.\d+)?[fFdDlL]?)'   # G3: numeric literal
-        r'|([a-zA-Z_]\w*)'              # G4: identifier
-        r'|(\.)'                         # G5: dot
-        r'|(\s+)'                        # G6: whitespace
-        r'|([^\w\s])'                   # G7: any other symbol
+
+def collect_rename_targets(tree, code: str) -> set:
+    targets = set()
+
+    def is_override(method_node) -> bool:
+        for child in method_node.children:
+            if child.type == "modifiers":
+                for mod in child.children:
+                    if mod.type == "marker_annotation":
+                        if "Override" in node_text(mod, code):
+                            return True
+        return False
+
+    def walk(node):
+        if node.type == "local_variable_declaration":
+            for child in node.children:
+                if child.type == "variable_declarator":
+                    for sub in child.children:
+                        if sub.type == "identifier":
+                            name = node_text(sub, code)
+                            if _is_candidate(name):
+                                targets.add(name)
+
+        elif node.type == "formal_parameter":
+            for child in node.children:
+                if child.type == "identifier":
+                    name = node_text(child, code)
+                    if _is_candidate(name):
+                        targets.add(name)
+
+        elif node.type == "enhanced_for_statement":
+            for child in node.children:
+                if child.type == "identifier":
+                    name = node_text(child, code)
+                    if _is_candidate(name):
+                        targets.add(name)
+
+        elif node.type == "method_declaration":
+            if not is_override(node):
+                for child in node.children:
+                    if child.type == "identifier":
+                        name = node_text(child, code)
+                        if _is_candidate(name):
+                            targets.add(name)
+                        break
+
+        for child in node.children:
+            walk(child)
+
+    walk(tree.root_node)
+    return targets
+
+
+def _is_candidate(name: str) -> bool:
+    return (
+        name not in JAVA_KEYWORDS
+        and len(name) > 1
+        and name[0].islower()
     )
 
-    tokens = list(token_re.finditer(code))
 
-    # ── Pass 1: collect rename candidates ────────────────────────────
-    candidates = set()
-    after_dot = False
-    for tok in tokens:
-        g1, g2, g3, g4, g5, g6, g7 = tok.groups()
-        if g6:          # whitespace — skip, don't reset after_dot
-            continue
-        if g5:          # dot — next identifier is a method/field, protect it
-            after_dot = True
-            continue
-        if g4 and not after_dot:
-            if g4 not in JAVA_KEYWORDS and g4[0].islower() and len(g4) > 1:
-                candidates.add(g4)
-        after_dot = False   # reset after any non-whitespace, non-dot token
+def apply_L3(code: str):
+    tree = parse(code)
+    targets = collect_rename_targets(tree, code)
+    rename_map = {name: encode_name(i) for i, name in enumerate(sorted(targets))}
 
-    rename_map = {name: encode_name(i)
-                  for i, name in enumerate(sorted(candidates))}
+    if not rename_map:
+        return code, rename_map
 
-    # ── Pass 2: rebuild code with renames applied ─────────────────────
+    token_re = re.compile(
+        r'("(?:[^"\\]|\\.)*")'
+        r'|(import\b[^;]+;)'
+        r'|(\d+(?:\.\d+)?[fFdDlL]?)'
+        r'|([a-zA-Z_]\w*)'
+        r'|(\.)'
+        r'|(\s+)'
+        r'|([^\w\s])'
+    )
+
     result = []
     after_dot = False
-    for tok in tokens:
-        g1, g2, g3, g4, g5, g6, g7 = tok.groups()
-        if g6:                          # whitespace — preserve as-is
+    for tok in token_re.finditer(code):
+        g1,g2,g3,g4,g5,g6,g7 = tok.groups()
+        if g6:
             result.append(g6)
             continue
-        if g5:                          # dot
+        if g5:
             result.append('.')
             after_dot = True
             continue
         if g4 and not after_dot and g4 in rename_map:
-            result.append(rename_map[g4])   # ← rename
+            result.append(rename_map[g4])
         else:
-            result.append(tok.group(0))     # ← keep original
+            result.append(tok.group(0))
         after_dot = False
 
     return ''.join(result), rename_map
 
+
 # ─────────────────────────────────────────────
-# PIPELINE: L0 → L1 → L2 → L3
+# PIPELINE: L0 -> L1 -> L2 -> L3
 # ─────────────────────────────────────────────
 def run_pipeline(code: str) -> dict:
     L0 = code
     L1 = apply_L1(L0)
-    L2 = apply_L2(L1)       # loop simplification first (names still readable)
-    L3, rename_map = apply_L3(L2)   # then rename
+    L2 = apply_L2(L1)
+    L3, rename_map = apply_L3(L2)
     return {"L0": L0, "L1": L1, "L2": L2, "L3": L3, "rename_map": rename_map}
 
 
@@ -169,23 +331,24 @@ def print_level(label, code):
     print(code)
 
 def print_report(r):
-    print_level("L0 — Original",           r["L0"])
-    print_level("L1 — Formatting Removed", r["L1"])
-    print_level("L2 — Loop Simplified",    r["L2"])
-    print_level("L3 — String Literals Truncated", r["L3"])
-    print_level("L3 — Variables Renamed",  r["L3"])
+    print_level("L0 — Original",                    r["L0"])
+    print_level("L1 — Formatting Removed",          r["L1"])
+    print_level("L2 — Loop Simplified",             r["L2"])
+    print_level("L3 — Variables + Methods Renamed", r["L3"])
 
     print(f"\n{'━'*65}")
     print("  RENAME MAP (L3)")
     print(f"{'━'*65}")
-    for orig, short in r["rename_map"].items():
-        print(f"  {orig:<25} →  {short}")
+    if r["rename_map"]:
+        for orig, short in r["rename_map"].items():
+            print(f"  {orig:<25} ->  {short}")
+    else:
+        print("  (no variables or methods renamed)")
 
 
 # ─────────────────────────────────────────────
 # READ FROM FILE
 # ─────────────────────────────────────────────
-
 def read_java_file(path):
     with open(path, "r", encoding="utf-8") as f:
         return f.read()
@@ -193,6 +356,5 @@ def read_java_file(path):
 
 if __name__ == "__main__":
     java_code = read_java_file("example.java")
-    
     results = run_pipeline(java_code)
     print_report(results)
