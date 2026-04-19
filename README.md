@@ -13,9 +13,7 @@ L0: Original Java Code
 
 L1: Formatting removed (whitespace, new lines, indentation)
 
-L2: Loop simplification (indexed loop → enhanced for-loop)
-
-L3: Rename variables
+L2: Rename variables
 
 
 Each level reduces code length and potentially token usage, while studying its impact on readability and structure.
@@ -25,7 +23,6 @@ Each level reduces code length and potentially token usage, while studying its i
 ## ⚙️ Features
 
 - Remove formatting (whitespace, indentation, new lines)
-- Simplify Java loops
 - Rename variables to shorter identifiers
 - Generate progressively shorter Java code versions
 
@@ -36,4 +33,5 @@ Each level reduces code length and potentially token usage, while studying its i
 Run the main script:
 
 ```bash
+pip install tree-sitter tree-sitter-java
 python main.py
