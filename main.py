@@ -2,6 +2,7 @@ import re
 import string
 from tree_sitter import Language, Parser
 import tree_sitter_java as tsjava
+from java_keywords import JAVA_KEYWORDS
 
 # ─────────────────────────────────────────────
 # SETUP TREE-SITTER
@@ -37,35 +38,6 @@ def apply_L1(code: str) -> str:
 #   4. Rename map built from declarations, applied everywhere including
 #      post-dot positions for method names
 # ─────────────────────────────────────────────
-JAVA_KEYWORDS = {
-    "abstract","assert","boolean","break","byte","case","catch","char",
-    "class","const","continue","default","do","double","else","enum",
-    "extends","final","finally","float","for","goto","if","implements",
-    "import","instanceof","int","interface","long","native","new",
-    "package","private","protected","public","return","short","static",
-    "super","switch","synchronized","this","throw","throws","transient",
-    "try","void","volatile","while","true","false","null",
-    # Standard types
-    "String","System","Object","Integer","Double","Float","Long","Boolean",
-    "List","ArrayList","Map","HashMap","Set","HashSet","Arrays","Collections",
-    "Math","StringBuilder","Scanner","Iterator","Optional","Random",
-    "Collection","Number","Comparable","Iterable","Runnable","Thread",
-    # Standard methods — never rename
-    "out","err","in","println","print","printf","format",
-    "toString","toArray","toList","size","get","set","add","remove","put",
-    "contains","isEmpty","isPresent","length","charAt","substring",
-    "equals","equalsIgnoreCase","indexOf","lastIndexOf","valueOf",
-    "parseInt","parseDouble","trim","strip","split","join",
-    "replace","replaceAll","matches","startsWith","endsWith",
-    "compareTo","hashCode","clone","getClass","notify","wait",
-    "next","hasNext","iterator","stream","forEach","filter","collect",
-    "sort","reverse","shuffle","min","max","abs","pow","sqrt","floor","ceil",
-    "append","insert","delete","capacity","nextInt","nextDouble",
-    "copy","main","args","item",
-    "run","start","stop","init","execute","call",
-    "getValue","setValue","getName","setName","getId","setId",
-}
-
 def encode_name(n: int) -> str:
     letters = string.ascii_lowercase
     result, n = "", n + 1
